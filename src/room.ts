@@ -158,7 +158,7 @@ export class ControlRoom extends DurableObject<Env> {
     if (path === '/api/health' && method === 'GET')
       return json({
         name: 'veronica',
-        version: '0.1.0',
+        version: '0.1.1',
         protocol: VERSION,
         configured: configured(this.env.ADMIN_TOKEN),
       });

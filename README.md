@@ -51,7 +51,7 @@ npm run deploy
 需要 **Node.js 22+** 和 npm。先在网页中获取一个 10 分钟有效、只能使用一次的配对码：
 
 ```bash
-npm install -g github:bttb2020/veronica-client#v0.1.0
+npm install -g https://github.com/bttb2020/veronica-client/releases/download/v0.1.1/bttb2020-veronica-client-0.1.1.tgz
 cd /path/to/your/projects
 veronica-client pair \
   --server https://veronica.YOUR-SUBDOMAIN.workers.dev \
@@ -61,7 +61,7 @@ veronica-client pair \
 veronica-client start
 ```
 
-安装从 GitHub 获取源码并构建 client；不依赖同名 npm 包是否发布。也可以从 [client Releases](https://github.com/bttb2020/veronica-client/releases) 下载已构建的 `.tgz` 后用 `npm install -g ./文件名.tgz` 安装。
+安装直接下载 GitHub Release 中已构建的 client，不需要 Git、TypeScript 编译器或 npm 发布账号。也可以从 [client Releases](https://github.com/bttb2020/veronica-client/releases) 手动下载 `.tgz` 后用 `npm install -g ./文件名.tgz` 安装。
 
 如果使用 coding agent，在配对时配置其 ACP 启动命令：
 
