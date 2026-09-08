@@ -1,0 +1,53 @@
+name: Checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: veronica
+      - uses: actions/checkout@v4
+        with:
+          repository: bttb2020/veronica-client
+          path: veronica-client
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            veronica/package-lock.json
+            veronica-client/package-lock.json
+      - run: npm ci
+        working-directory: veronica-client
+      - run: npm ci
+        working-directory: veronica
+      - run: npm run check && npm test && npm run build
+        working-directory: veronica
+      - run: npm run check && npm test
+        working-directory: veronica-client
+      - run: npx prettier --check .
+        working-directory: veronica
+      - run: npx wrangler deploy --dry-run
+        working-directory: veronica
+      - run: npx playwright install --with-deps chromium
+        working-directory: veronica
+      - run: npm run test:e2e
+        working-directory: veronica
+        env:
+          VERONICA_BROWSER: '1'
+          VERONICA_ARTIFACT_DIR: ../artifacts
+          WRANGLER_SEND_METRICS: 'false'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-previews
+          path: artifacts
+          if-no-files-found: ignore

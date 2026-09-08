@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "veronica",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-08",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/connect"],
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "CONTROL", "class_name": "ControlRoom" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ControlRoom"] }],
+  "observability": { "enabled": true },
+}

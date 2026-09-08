@@ -1,0 +1,33 @@
+{
+  "name": "veronica",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Your development machines, one personal control room. Deploy to Cloudflare.",
+  "scripts": {
+    "dev": "npm run build && wrangler dev",
+    "build": "vite build",
+    "deploy": "npm run build && wrangler deploy",
+    "check": "tsc --noEmit && tsc --noEmit -p tsconfig.web.json",
+    "test": "vitest run",
+    "test:e2e": "node test/e2e.mjs"
+  },
+  "cloudflare": {
+    "bindings": {
+      "ADMIN_TOKEN": {
+        "description": "Your private administrator key. Generate at least 32 random characters, for example with `openssl rand -hex 32`. Use this key to sign into your Veronica dashboard. Never use the example value."
+      }
+    }
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260908.1",
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^22.0.0",
+    "prettier": "^3.9.6",
+    "typescript": "^5.9.3",
+    "vite": "^7.0.0",
+    "vitest": "^3.2.4",
+    "wrangler": "^4.129.1",
+    "ws": "^8.21.3"
+  }
+}

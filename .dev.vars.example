@@ -1,0 +1,2 @@
+# Replace this before use. The Deploy to Cloudflare flow asks for this secret.
+ADMIN_TOKEN=replace-with-at-least-32-random-characters
