@@ -13,5 +13,8 @@
     "bindings": [{ "name": "CONTROL", "class_name": "ControlRoom" }],
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ControlRoom"] }],
-  "observability": { "enabled": true },
+  "observability": {
+    "enabled": true,
+    "traces": { "enabled": true, "head_sampling_rate": 0.1 },
+  },
 }

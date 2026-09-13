@@ -2,14 +2,14 @@
 
 **Your machines. Within reach.**
 
-Veronica 是部署在你自己 Cloudflare 账号中的个人开发机器控制台。打开网页，选择一台电脑或服务器，运行 Shell 命令或向 coding agent 下发任务，实时查看输出、处理权限请求和取消任务。
+Veronica 是部署在你自己 Cloudflare 账号中的个人编程协作空间。打开网页即可与开发机器上的 agent 持续对话：切换项目、发送图片和文件、查看执行过程、批准工具操作，关闭网页后工作仍在机器上继续。
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/bttb2020/veronica)
 [![Checks](https://github.com/bttb2020/veronica/actions/workflows/checks.yml/badge.svg)](https://github.com/bttb2020/veronica/actions/workflows/checks.yml)
 
 Server: **this repository** · Execution client: **[veronica-client](https://github.com/bttb2020/veronica-client)**
 
-![Veronica dashboard showing a connected development machine and live task output](docs/images/dashboard.png)
+![Veronica conversations with persistent history, streamed results and attachments](docs/images/conversations.png)
 
 不依赖飞书。Web 是第一方入口；[wechat-acp](https://github.com/formulahendry/wechat-acp) 可以通过 client 提供的 ACP stdio 适配器，作为可选的微信入口。
 
@@ -19,7 +19,11 @@ Server: **this repository** · Execution client: **[veronica-client](https://git
 - 运行 Shell 命令，或调用本机安装的 ACP coding agent。
 - 实时输出、任务历史、取消任务、同机顺序执行。
 - 设备离线时持久化排队；重连后补传已有输出并继续调度。
-- 同一个 agent 会话在 client 进程存活期间保留上下文。
+- 持久化会话列表、搜索、重命名、归档、删除和 Markdown 导出；刷新恢复当前会话与草稿。
+- 同一会话绑定一台机器、一个项目和执行器；运行中追加消息自动排队。
+- 文本、工具活动、计划和权限请求直接显示在聊天中。
+- 图片／文件上传、粘贴和拖放，每条最多四个，每个最多 2 MB。
+- 支持 `loadSession` 的 ACP agent 可在 client 重启后恢复会话，其他适配器明确显示上下文重置提示。
 - 在 Web 中批准或拒绝 ACP agent 的权限请求。
 - 为外部操作器签发限定到一台设备的可撤销令牌。
 - 桌面和手机浏览器布局。
@@ -51,19 +55,29 @@ npm run deploy
 需要 **Node.js 22+** 和 npm。先在网页中获取一个 10 分钟有效、只能使用一次的配对码：
 
 ```bash
-npm install -g https://github.com/bttb2020/veronica-client/releases/download/v0.1.1/bttb2020-veronica-client-0.1.1.tgz
+npm install -g https://github.com/bttb2020/veronica-client/releases/download/v0.2.0/bttb2020-veronica-client-0.2.0.tgz
 cd /path/to/your/projects
 veronica-client pair \
   --server https://veronica.YOUR-SUBDOMAIN.workers.dev \
   --code YOUR_ONE_TIME_CODE \
   --root . \
-  --allow-shell
-veronica-client start
+  --allow-shell --agent codex
+veronica-client service install
 ```
 
 安装直接下载 GitHub Release 中已构建的 client，不需要 Git、TypeScript 编译器或 npm 发布账号。也可以从 [client Releases](https://github.com/bttb2020/veronica-client/releases) 手动下载 `.tgz` 后用 `npm install -g ./文件名.tgz` 安装。
 
-如果使用 coding agent，在配对时配置其 ACP 启动命令：
+选择 `--agent codex` 或 `--agent claude` 会为当前 profile 安装固定版本的 ACP 适配器；模型认证使用执行机器上的本地凭据。先在本机完成对应 agent 的登录或配置 API 密钥。已有配对无需重新注册：
+
+```bash
+veronica-client configure --agent codex
+veronica-client service install
+veronica-client service status
+```
+
+Linux / macOS 的 `service install` 安装当前用户的系统服务；`start` 保留为前台运行。机器需要开机、保持唤醒和联网。没有服务管理器的临时 agent 容器无法靠网页变成常驻机器。
+
+也支持自定义 ACP 启动命令：
 
 ```bash
 veronica-client pair \
@@ -74,6 +88,14 @@ veronica-client pair \
 ```
 
 `your-acp-agent` 是你已安装并授权的 ACP agent 程序，请替换为该 agent 官方支持的命令和参数。`--allow-shell` 与 `--agent-command` 可以同时配置。完整安装、自启动和多 profile 说明见 [client 文档](https://github.com/bttb2020/veronica-client#readme)。
+
+## 网页日常操作
+
+登录后默认进入 **Chat**。新建会话时选择机器、执行方式和相对于机器根目录的项目路径。后续消息沿用这个会话；切换项目会开启独立上下文。机器离线时会显示具体提示，已经具备执行能力的机器仍可排队。
+
+支持 `/new`、`/stop`、`/cd project-path` 和 `/help`。桌面按 Enter 发送，Shift + Enter 换行；手机用发送按钮。历史会话和附件保存在你自己的 Worker 中，草稿保存在当前浏览器中。
+
+升级旧部署时保留 `CONTROL` 绑定与 `personal` 对象身份。数据库使用增量迁移，旧任务自动归入会话。先更新 server，再更新 client；v0.1 client 继续支持原来的文本和 Shell 流程。
 
 ## 微信操作器
 
@@ -99,7 +121,7 @@ WeChat → wechat-acp → veronica-client acp
        → Veronica API → device WebSocket → local ACP agent
 ```
 
-v0.1 转发文本请求和文本结果；权限请求仍需在 Web 控制台处理，Veronica 不会采用 wechat-acp 的自动批准行为。微信侧下载的附件路径不会变成远端机器的本地文件；跨机器附件传输尚未实现。我们测试了 ACP 适配器的完整协议链路，真实微信扫码和消息投递需要可用的 iLink 账号环境。
+微信操作器目前转发文本请求和文本结果；权限请求仍需在 Web 控制台处理，Veronica 不会采用 wechat-acp 的自动批准行为。微信侧下载的附件路径不会变成远端机器的本地文件；微信附件尚未接入；网页支持将附件发送到执行机器。我们测试了 ACP 适配器的完整协议链路，真实微信扫码和消息投递需要可用的 iLink 账号环境。
 
 ## 架构与可靠性
 
@@ -108,7 +130,7 @@ flowchart LR
   Browser[Web dashboard] --> Worker[Worker: auth and API]
   Operator[Optional ACP / WeChat operator] --> Worker
   Worker --> Room[Personal Durable Object]
-  Room --- Store[(SQLite: devices, tasks, events)]
+  Room --- Store[(SQLite: devices, sessions, tasks, events, attachments)]
   Client[Development machine client] <-->|Outbound WebSocket| Room
   Client --> Shell[Shell process]
   Client --> Agent[ACP coding agent]

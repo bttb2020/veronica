@@ -1,5 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './index';
+import { migrateConversations } from './migrations';
 import {
   configured,
   cookie,
@@ -15,6 +16,7 @@ import {
   TERMINAL,
   validateTask,
   VERSION,
+  validateAttachments,
 } from './protocol';
 
 type Row = Record<string, any>;
@@ -46,6 +48,17 @@ export class ControlRoom extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS permissions (taskId TEXT NOT NULL, requestId TEXT NOT NULL, data TEXT NOT NULL, outcome TEXT, PRIMARY KEY(taskId, requestId));
       CREATE TABLE IF NOT EXISTS login_attempts (key TEXT PRIMARY KEY, count INTEGER NOT NULL, resetAt INTEGER NOT NULL);
     `);
+    // Additive, idempotent upgrade: preserve the existing device and task data.
+    ctx.storage.transactionSync(() => {
+      ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, deviceId TEXT NOT NULL, title TEXT NOT NULL, cwd TEXT NOT NULL, executor TEXT NOT NULL, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL, archived INTEGER NOT NULL DEFAULT 0);
+        CREATE INDEX IF NOT EXISTS sessions_updated ON sessions(updatedAt);
+        CREATE INDEX IF NOT EXISTS tasks_session ON tasks(sessionId,createdAt);
+        CREATE TABLE IF NOT EXISTS attachment_chunks (attachmentId TEXT NOT NULL, part INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY(attachmentId,part));
+        CREATE TABLE IF NOT EXISTS attachments (id TEXT PRIMARY KEY, sessionId TEXT NOT NULL, name TEXT NOT NULL, mime TEXT NOT NULL, data TEXT NOT NULL, bytes INTEGER NOT NULL, createdAt INTEGER NOT NULL);
+      `);
+      migrateConversations(ctx.storage.sql);
+    });
     ctx.setWebSocketAutoResponse(
       new WebSocketRequestResponsePair('ping', 'pong'),
     );
@@ -55,6 +68,14 @@ export class ControlRoom extends DurableObject<Env> {
   }
   first(query: string, ...params: (string | number | null)[]): Row | undefined {
     return this.rows(query, ...params)[0];
+  }
+  attachmentData(id: string): string {
+    return this.rows(
+      'SELECT data FROM attachment_chunks WHERE attachmentId=? ORDER BY part',
+      id,
+    )
+      .map((r) => r.data)
+      .join('');
   }
   deviceSocket(id: string) {
     return this.ctx
@@ -77,13 +98,15 @@ export class ControlRoom extends DurableObject<Env> {
       throw new HttpError(415, 'Use application/json.');
     const reader = request.body?.getReader();
     if (!reader) throw new HttpError(400, 'JSON object required.');
+    const limit =
+      new URL(request.url).pathname === '/api/attachments' ? 3000000 : 65536;
     let size = 0;
     const chunks: Uint8Array[] = [];
     for (;;) {
       const { value, done } = await reader.read();
       if (done) break;
       size += value.length;
-      if (size > 65536) {
+      if (size > limit) {
         await reader.cancel();
         throw new HttpError(413, 'Request too large.');
       }
@@ -158,7 +181,7 @@ export class ControlRoom extends DurableObject<Env> {
     if (path === '/api/health' && method === 'GET')
       return json({
         name: 'veronica',
-        version: '0.1.1',
+        version: '0.2.0',
         protocol: VERSION,
         configured: configured(this.env.ADMIN_TOKEN),
       });
@@ -265,8 +288,29 @@ export class ControlRoom extends DurableObject<Env> {
         role: 'device',
         deviceId: device.id,
       } satisfies Attachment);
-      this.send(pair[1], { type: 'welcome', v: VERSION });
+      this.send(pair[1], {
+        type: 'welcome',
+        v: VERSION,
+        features: ['activity', 'attachments', 'sessions'],
+      });
       return new Response(null, { status: 101, webSocket: pair[0] });
+    }
+    const download = path.match(/^\/api\/device\/attachments\/([^/]+)$/);
+    if (download && method === 'GET') {
+      const token =
+        request.headers.get('Authorization')?.replace(/^Bearer /i, '') ?? '';
+      const d = this.first(
+        'SELECT id FROM devices WHERE tokenHash=? AND revoked=0',
+        await hash(token),
+      );
+      if (!d) throw new HttpError(401, 'Device authentication required.');
+      const file = this.first(
+        'SELECT a.* FROM attachments a JOIN sessions s ON s.id=a.sessionId WHERE a.id=? AND s.deviceId=?',
+        download[1],
+        d.id,
+      );
+      if (!file) throw new HttpError(404, 'Attachment not found.');
+      return json({ ...file, data: this.attachmentData(file.id) });
     }
     const p = await this.principal(request);
     if (path === '/api/me' && method === 'GET') return json(p);
@@ -370,6 +414,215 @@ export class ControlRoom extends DurableObject<Env> {
       this.rows('UPDATE operators SET revoked=1 WHERE id=?', opRoute[1]);
       return json({ ok: true });
     }
+    if (path === '/api/sessions' && method === 'GET') {
+      const query = (searchParams.get('q') ?? '').slice(0, 100);
+      return json({
+        sessions: this.rows(
+          `SELECT s.*, (SELECT status FROM tasks WHERE sessionId=s.id ORDER BY createdAt DESC,rowid DESC LIMIT 1) AS status,
+        (SELECT COUNT(*) FROM tasks WHERE sessionId=s.id AND status NOT IN ('completed','failed','cancelled','interrupted')) AS pending
+        FROM sessions s WHERE archived=? AND (?='' OR deviceId=?) AND title LIKE ? ORDER BY updatedAt DESC LIMIT 200`,
+          searchParams.get('archived') === 'true' ? 1 : 0,
+          p.role === 'operator' ? p.deviceId : '',
+          p.role === 'operator' ? p.deviceId : '',
+          '%' + query + '%',
+        ),
+      });
+    }
+    if (path === '/api/sessions' && method === 'POST') {
+      const body = await this.body(request);
+      const data = validateTask({ ...body, input: 'New conversation' });
+      this.access(p, data.deviceId);
+      if (
+        !this.first(
+          'SELECT id FROM devices WHERE id=? AND revoked=0',
+          data.deviceId,
+        )
+      )
+        throw new HttpError(404, 'Device not found.');
+      const id = crypto.randomUUID(),
+        now = Date.now();
+      if (this.first('SELECT COUNT(*) AS n FROM sessions')!.n >= 2000)
+        throw new HttpError(409, 'Conversation limit reached.');
+      this.rows(
+        'INSERT INTO sessions(id,deviceId,title,cwd,executor,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?)',
+        id,
+        data.deviceId,
+        requireString(body.title ?? 'New conversation', 'title', 100),
+        data.cwd,
+        data.executor,
+        now,
+        now,
+      );
+      this.broadcast();
+      return json(
+        { session: this.first('SELECT * FROM sessions WHERE id=?', id) },
+        201,
+      );
+    }
+    const sessionRoute = path.match(/^\/api\/sessions\/([^/]+)$/);
+    if (sessionRoute) {
+      const conversation = this.first(
+        'SELECT * FROM sessions WHERE id=?',
+        sessionRoute[1],
+      );
+      if (!conversation) throw new HttpError(404, 'Conversation not found.');
+      this.access(p, conversation.deviceId);
+      if (method === 'GET') {
+        const before =
+          Number(searchParams.get('before')) || Number.MAX_SAFE_INTEGER;
+        const turns = this.rows(
+          'SELECT rowid AS cursor,* FROM tasks WHERE sessionId=? AND rowid<? ORDER BY rowid DESC LIMIT 50',
+          conversation.id,
+          before,
+        );
+        return json({
+          session: conversation,
+          tasks: turns.reverse(),
+          hasMore: turns.length === 50,
+          attachments: this.rows(
+            'SELECT id,name,mime,bytes FROM attachments WHERE sessionId=? ORDER BY createdAt',
+            conversation.id,
+          ),
+        });
+      }
+      if (method === 'DELETE') {
+        if (
+          this.first(
+            "SELECT id FROM tasks WHERE sessionId=? AND status NOT IN ('completed','failed','cancelled','interrupted')",
+            conversation.id,
+          )
+        )
+          throw new HttpError(
+            409,
+            'Stop unfinished work before deleting the conversation.',
+          );
+        this.ctx.storage.transactionSync(() => {
+          this.rows(
+            'DELETE FROM permissions WHERE taskId IN (SELECT id FROM tasks WHERE sessionId=?)',
+            conversation.id,
+          );
+          this.rows(
+            'DELETE FROM events WHERE taskId IN (SELECT id FROM tasks WHERE sessionId=?)',
+            conversation.id,
+          );
+          this.rows('DELETE FROM tasks WHERE sessionId=?', conversation.id);
+          this.rows(
+            'DELETE FROM attachment_chunks WHERE attachmentId IN (SELECT id FROM attachments WHERE sessionId=?)',
+            conversation.id,
+          );
+          this.rows(
+            'DELETE FROM attachments WHERE sessionId=?',
+            conversation.id,
+          );
+          this.rows('DELETE FROM sessions WHERE id=?', conversation.id);
+        });
+        this.broadcast();
+        return json({ ok: true });
+      }
+      if (method === 'PATCH') {
+        const body = await this.body(request);
+        const title =
+          body.title === undefined
+            ? conversation.title
+            : requireString(body.title, 'title', 100);
+        if (body.archived !== undefined && typeof body.archived !== 'boolean')
+          throw new HttpError(400, 'archived must be boolean.');
+        this.rows(
+          'UPDATE sessions SET title=?,archived=?,updatedAt=? WHERE id=?',
+          title,
+          body.archived === undefined
+            ? conversation.archived
+            : Number(body.archived),
+          Date.now(),
+          conversation.id,
+        );
+        this.broadcast();
+        return json({ ok: true });
+      }
+    }
+    if (path === '/api/attachments' && method === 'POST') {
+      const body = await this.body(request),
+        sessionId = requireString(body.sessionId, 'sessionId', 100);
+      const conversation = this.first(
+        'SELECT * FROM sessions WHERE id=?',
+        sessionId,
+      );
+      if (!conversation) throw new HttpError(404, 'Conversation not found.');
+      this.access(p, conversation.deviceId);
+      const name = requireString(body.name, 'name', 180),
+        mime = requireString(
+          body.mime || 'application/octet-stream',
+          'mime',
+          100,
+        );
+      if (
+        typeof body.data !== 'string' ||
+        !/^[A-Za-z0-9+/]*={0,2}$/.test(body.data)
+      )
+        throw new HttpError(400, 'Invalid base64 attachment.');
+      let bytes = 0;
+      try {
+        bytes = atob(body.data).length;
+      } catch {
+        throw new HttpError(400, 'Invalid base64 attachment.');
+      }
+      if (!bytes || bytes > 2 * 1024 * 1024)
+        throw new HttpError(413, 'Files must be between 1 byte and 2 MB.');
+      if (
+        this.first('SELECT COALESCE(SUM(bytes),0) AS n FROM attachments')!.n +
+          bytes >
+        50 * 1024 * 1024
+      )
+        throw new HttpError(413, 'Attachment storage is full (50 MB).');
+      const id = crypto.randomUUID();
+      this.ctx.storage.transactionSync(() => {
+        this.rows(
+          'INSERT INTO attachments VALUES (?,?,?,?,?,?,?)',
+          id,
+          sessionId,
+          name,
+          mime,
+          '',
+          bytes,
+          Date.now(),
+        );
+        // Keep each SQLite row comfortably below the platform's 2 MB limit.
+        for (
+          let offset = 0, part = 0;
+          offset < body.data.length;
+          offset += 700000, part++
+        )
+          this.rows(
+            'INSERT INTO attachment_chunks VALUES (?,?,?)',
+            id,
+            part,
+            body.data.slice(offset, offset + 700000),
+          );
+      });
+      return json({ id, name, mime, bytes }, 201);
+    }
+    const attachmentRoute = path.match(/^\/api\/attachments\/([^/]+)$/);
+    if (attachmentRoute && method === 'GET') {
+      const file = this.first(
+        'SELECT a.*,s.deviceId FROM attachments a JOIN sessions s ON s.id=a.sessionId WHERE a.id=?',
+        attachmentRoute[1],
+      );
+      if (!file) throw new HttpError(404, 'Attachment not found.');
+      this.access(p, file.deviceId);
+      return new Response(
+        Uint8Array.from(atob(this.attachmentData(file.id)), (c) =>
+          c.charCodeAt(0),
+        ),
+        {
+          headers: {
+            'Content-Type': 'application/octet-stream',
+            'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`,
+            'X-Content-Type-Options': 'nosniff',
+            'Cache-Control': 'no-store',
+          },
+        },
+      );
+    }
     if (path === '/api/tasks' && method === 'GET') {
       const deviceId =
         p.role === 'operator' ? p.deviceId : searchParams.get('deviceId');
@@ -384,6 +637,7 @@ export class ControlRoom extends DurableObject<Env> {
     if (path === '/api/tasks' && method === 'POST') {
       const body = await this.body(request),
         data = validateTask(body);
+      const attachmentIds = validateAttachments(body.attachmentIds);
       this.access(p, data.deviceId);
       const id =
         body.id === undefined
@@ -397,6 +651,7 @@ export class ControlRoom extends DurableObject<Env> {
           existing.input !== data.input ||
           existing.executor !== data.executor ||
           existing.cwd !== data.cwd ||
+          existing.attachmentIds !== JSON.stringify(attachmentIds) ||
           (body.sessionId !== undefined &&
             existing.sessionId !== data.sessionId)
         )
@@ -427,8 +682,56 @@ export class ControlRoom extends DurableObject<Env> {
           409,
           'History is full (1,000 tasks). Delete old finished tasks to continue.',
         );
+      const conversation = this.first(
+        'SELECT * FROM sessions WHERE id=?',
+        data.sessionId,
+      );
+      if (
+        conversation &&
+        (conversation.deviceId !== data.deviceId ||
+          conversation.cwd !== data.cwd ||
+          conversation.executor !== data.executor)
+      )
+        throw new HttpError(
+          409,
+          'A conversation stays on one machine, directory, and executor. Start a new conversation to change them.',
+        );
+      if (conversation?.archived)
+        throw new HttpError(
+          409,
+          'Restore this conversation before sending a message.',
+        );
+      for (const fileId of attachmentIds)
+        if (
+          !this.first(
+            'SELECT id FROM attachments WHERE id=? AND sessionId=?',
+            fileId,
+            data.sessionId,
+          )
+        )
+          throw new HttpError(
+            400,
+            'Attachment does not belong to this conversation.',
+          );
+      const now = Date.now();
       this.rows(
-        'INSERT INTO tasks(id,deviceId,sessionId,executor,input,cwd,status,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,?,?)',
+        'INSERT OR IGNORE INTO sessions(id,deviceId,title,cwd,executor,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?)',
+        data.sessionId,
+        data.deviceId,
+        data.input.slice(0, 80),
+        data.cwd,
+        data.executor,
+        now,
+        now,
+      );
+      this.rows(
+        "UPDATE sessions SET updatedAt=?,title=CASE WHEN title='New conversation' THEN ? ELSE title END WHERE id=?",
+        now,
+        data.input.slice(0, 80),
+        data.sessionId,
+      );
+      this.rows(
+        'INSERT INTO tasks(id,deviceId,sessionId,executor,input,cwd,status,createdAt,updatedAt,attachmentIds) VALUES (?,?,?,?,?,?,?,?,?,?)',
         id,
         data.deviceId,
         data.sessionId,
@@ -438,6 +741,7 @@ export class ControlRoom extends DurableObject<Env> {
         'queued',
         Date.now(),
         Date.now(),
+        JSON.stringify(attachmentIds),
       );
       this.dispatch(data.deviceId);
       this.broadcast();
@@ -651,7 +955,11 @@ export class ControlRoom extends DurableObject<Env> {
         this.send(ws, { type: 'replay', taskId, after: task.lastSeq });
         return;
       }
-      if (!['accepted', 'output', 'permission', 'finished'].includes(kind))
+      if (
+        !['accepted', 'output', 'permission', 'finished', 'activity'].includes(
+          kind,
+        )
+      )
         throw new Error('Invalid event kind');
       if (
         kind === 'output' &&
@@ -680,8 +988,9 @@ export class ControlRoom extends DurableObject<Env> {
       )
         throw new Error('Invalid permission');
       const encoded = JSON.stringify(data);
+      if (encoded.length > 24000) throw new Error('Event too large');
       this.ctx.storage.transactionSync(() => {
-        if (kind === 'output' && task.outputBytes + encoded.length > 1500000) {
+        if (task.outputBytes + encoded.length > 1500000) {
           this.rows(
             "UPDATE tasks SET status='failed',error='Output limit exceeded.',updatedAt=? WHERE id=?",
             Date.now(),
@@ -700,7 +1009,7 @@ export class ControlRoom extends DurableObject<Env> {
             'UPDATE tasks SET lastSeq=?,updatedAt=?,outputBytes=outputBytes+? WHERE id=?',
             seq,
             Date.now(),
-            kind === 'output' ? encoded.length : 0,
+            encoded.length,
             taskId,
           );
           if (kind === 'accepted' && task.status !== 'cancelling')

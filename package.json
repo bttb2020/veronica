@@ -1,6 +1,6 @@
 {
   "name": "veronica",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Your development machines, one personal control room. Deploy to Cloudflare.",
@@ -29,5 +29,9 @@
     "vitest": "^3.2.4",
     "wrangler": "^4.129.1",
     "ws": "^8.21.3"
+  },
+  "dependencies": {
+    "dompurify": "^3.4.15",
+    "marked": "^18.0.13"
   }
 }

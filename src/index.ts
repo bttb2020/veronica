@@ -14,7 +14,8 @@ export default {
       const origin = request.headers.get('Origin');
       if (origin && origin !== url.origin)
         throw new HttpError(403, 'Cross-origin requests are not allowed.');
-      if (Number(request.headers.get('Content-Length') || 0) > 65536)
+      const limit = url.pathname === '/api/attachments' ? 3000000 : 65536;
+      if (Number(request.headers.get('Content-Length') || 0) > limit)
         throw new HttpError(413, 'Request too large.');
       // Materialize the bounded body before crossing the DO boundary. Endpoints
       // that reject a request early must not leave a live incoming body stream.
@@ -27,7 +28,7 @@ export default {
           const { value, done } = await reader.read();
           if (done) break;
           size += value.length;
-          if (size > 65536) {
+          if (size > limit) {
             await reader.cancel();
             throw new HttpError(413, 'Request too large.');
           }

@@ -103,3 +103,19 @@ A disconnected device retains its active assignment. A new task waits behind it.
 Cancellation during disconnection remains pending. Revocation closes the credential's connection and marks outstanding tasks interrupted, but cannot immediately stop a process on an offline computer. Reconnecting with a revoked credential fails and the client shuts down its active work.
 
 Browser sockets carry only `{type:"changed"}`. The dashboard then reads authenticated state and sequential output pages. This keeps task data out of stale browser socket notifications.
+
+## Conversations and attachments (v0.2)
+
+Protocol version remains 1. The server `welcome` advertises optional `features: ["activity", "attachments", "sessions"]`. New clients send rich `activity` events only when the server advertises support. Existing clients can keep sending the original event types.
+
+- `GET /api/sessions?archived=true&q=...`: latest 200 matching conversations, restricted to the operator's device when applicable.
+- `POST /api/sessions`: `{deviceId, executor, cwd, title?}` creates a conversation.
+- `GET /api/sessions/:id?before=<cursor>`: up to 50 turns in chronological order and attachment metadata. Use the oldest returned cursor to load earlier turns.
+- `PATCH /api/sessions/:id`: `{title?, archived?}`.
+- `DELETE /api/sessions/:id`: deletes a finished conversation, turns, events and cloud attachments. Unfinished work must be stopped first.
+- `POST /api/attachments`: authenticated `{sessionId, name, mime, data}` with base64 data, at most 2 MB decoded. Returns attachment ID.
+- `GET /api/attachments/:id`: authenticated download with attachment disposition.
+- `GET /api/device/attachments/:id`: device bearer authentication; returns file data only for a conversation assigned to that device.
+- `POST /api/tasks` additionally accepts `attachmentIds: string[]`. IDs must belong to the task's conversation. The stored task exposes `attachmentIds` as a JSON-encoded list for wire compatibility.
+
+A conversation cannot switch machine, executor or working directory after creation. A reused task ID must match its attachment IDs too. All conversation routes enforce the same administrator/operator scope as tasks. `activity` events carry bounded `{kind, title, status?, text?}`; clients treat these as display data.

@@ -8,19 +8,19 @@ Only give access to people and integrations you trust to act as your operating-s
 
 ## Uptime and recovery
 
-Run `veronica-client start` under your OS's service manager (examples in the client repository). The machine must remain powered on, awake, and able to reach your server. An outbound HTTPS/WebSocket connection is required; no inbound port is opened.
+Run `veronica-client service install` from a normal Linux or macOS login session. It installs an OS-managed user service. Use `service status`, `service logs`, `service restart`, `service stop`, or `service uninstall`. `start` remains a foreground command. On a Linux server, user lingering must be enabled by its administrator if the service should survive logout; macOS LaunchAgents start at login. The machine must remain powered on, awake, and able to reach your server. An outbound HTTPS/WebSocket connection is required; no inbound port is opened.
 
 Cloudflare deployments and network changes can disconnect WebSockets. Client reconnect uses exponential backoff and jitter; its task journal supplies duplicate suppression and replay. DO business state lives in SQLite, while connections use Hibernation. Avoid removing the DO migration or binding when updating the Worker.
 
 An unexpected client restart marks unfinished local tasks interrupted. Inspect actual repository/process state before running a new task. A process or its detached descendants may have produced side effects before a crash; this system does not provide transactions over shell commands.
 
-ACP agent sessions survive individual tasks and transient network outages while the client process is alive. They are not restored after client restart. At most ten sessions are kept, with the oldest removed when more are opened. Subsequent work on an expired session starts fresh and includes a notice in the output.
+Conversation titles, messages, output, attachment metadata and archive state are durable in the server. Agent session IDs are stored privately on the client. If the adapter advertises `loadSession`, Veronica restores its session after restart or eviction from the ten-session process cache and suppresses the adapter’s history replay to avoid duplicated messages. A restore failure is shown as an error instead of silently starting over. Adapters without that capability start a fresh context and emit an explicit progress notice; cloud history remains available.
 
 ## Retention and limits
 
 The cloud retains up to 1,000 task records. Delete completed records in the dashboard to free space. Deletion also removes their cloud output and pending-permission records. Local client journals remain until the operator removes the retired profile; they can contain sensitive task inputs and outputs and should be protected like source code.
 
-v0.1 has no backup/export UI or automatic retention policy. Account for the storage limits and pricing of your Cloudflare plan. Requests and active Durable Object work are metered; Hibernation reduces idle duration costs but does not eliminate all charges.
+The conversation toolbar exports Markdown or deletes a finished conversation and its uploaded files. Cloud attachments are limited to 2 MB each, four per turn and 50 MB per personal server. Downloaded files live in `.veronica-inbox` under the machine root; cloud deletion does not remove those local copies. There is no automatic retention policy. Account for the storage limits and pricing of your Cloudflare plan. Requests and active Durable Object work are metered; Hibernation reduces idle duration costs but does not eliminate all charges.
 
 ## Troubleshooting
 

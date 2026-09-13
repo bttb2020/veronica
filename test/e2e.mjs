@@ -362,6 +362,122 @@ try {
   });
   assert.match(output(await complete(permissionTask.id)), /"optionId":"allow"/);
   console.log('✓ ACP agent sessions and permission approval round trip');
+  const conversation = (await ok('/api/sessions/' + sessionId)).session;
+  assert.equal(conversation.deviceId, deviceId);
+  assert.equal(
+    (
+      await request('/api/tasks', {
+        deviceId,
+        executor: 'shell',
+        input: 'echo nope',
+        sessionId,
+      })
+    ).status,
+    409,
+  );
+  assert.equal((await ok('/api/sessions/' + sessionId)).tasks.length, 2);
+  await ok(
+    '/api/sessions/' + sessionId,
+    { title: 'Persistent project conversation' },
+    token,
+    'PATCH',
+  );
+  const upload = await ok('/api/attachments', {
+    sessionId,
+    name: 'notes.txt',
+    mime: 'text/plain',
+    data: Buffer.from('attachment content').toString('base64'),
+  });
+  const image = await ok('/api/attachments', {
+    sessionId,
+    name: 'pixel.png',
+    mime: 'image/png',
+    data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aSgAAAABJRU5ErkJggg==',
+  });
+  assert.equal(
+    (
+      await request('/api/tasks', {
+        deviceId,
+        executor: 'agent',
+        input: 'wrong conversation',
+        attachmentIds: [upload.id],
+      })
+    ).status,
+    400,
+  );
+  const attachmentTask = await task('Read attachments', 'agent', {
+    sessionId,
+    attachmentIds: [upload.id, image.id],
+  });
+  const attachmentResult = await complete(attachmentTask.id);
+  assert.match(output(attachmentResult), /Received image attachment/);
+  assert.match(output(attachmentResult), /Saved on this machine/);
+  assert.equal(
+    await readFile(
+      join(project, '.veronica-inbox', upload.id + '-notes.txt'),
+      'utf8',
+    ),
+    'attachment content',
+  );
+  assert.ok(attachmentResult.events.some((e) => e.kind === 'activity'));
+  assert.equal(
+    (await request('/api/device/attachments/' + upload.id, undefined, null))
+      .status,
+    401,
+  );
+  await ok('/api/sessions/' + sessionId, { archived: true }, token, 'PATCH');
+  assert.equal(
+    (
+      await request('/api/tasks', {
+        deviceId,
+        executor: 'agent',
+        input: 'archived',
+        sessionId,
+      })
+    ).status,
+    409,
+  );
+  await ok('/api/sessions/' + sessionId, { archived: false }, token, 'PATCH');
+  deviceProcess.kill('SIGTERM');
+  await waitFor(() => deviceProcess.exitCode !== null, 'client clean shutdown');
+  deviceProcess = startDevice();
+  await waitFor(
+    async () =>
+      (await ok('/api/devices')).devices.find((d) => d.id === deviceId)?.online,
+    'reconnected client',
+  );
+  const resumed = await task('Continue after restart', 'agent', { sessionId });
+  const resumedResult = await complete(resumed.id);
+  assert.match(output(resumedResult), /fixture turn 4/);
+  assert.doesNotMatch(output(resumedResult), /REPLAY_SHOULD_NOT_BE_DUPLICATED/);
+  const largeFile = await ok('/api/attachments', {
+    sessionId,
+    name: 'boundary.bin',
+    mime: 'application/octet-stream',
+    data: Buffer.alloc(2 * 1024 * 1024, 7).toString('base64'),
+  });
+  const downloaded = await fetch(server + '/api/attachments/' + largeFile.id, {
+    headers: { Authorization: 'Bearer ' + token },
+  });
+  assert.equal(downloaded.status, 200);
+  assert.deepEqual(
+    Buffer.from(await downloaded.arrayBuffer()),
+    Buffer.alloc(2 * 1024 * 1024, 7),
+  );
+  assert.equal(
+    (
+      await request('/api/attachments', {
+        sessionId,
+        name: 'too-large.bin',
+        mime: 'application/octet-stream',
+        data: Buffer.alloc(2 * 1024 * 1024 + 1).toString('base64'),
+      })
+    ).status,
+    413,
+  );
+  console.log(
+    '✓ Persistent conversations, adapter session restore, attachments, rich progress and archive controls',
+  );
 
   const secondCode = (await ok('/api/pairings', { name: 'Other device' })).code;
   const other = await ok('/api/pair', { code: secondCode }, null);
@@ -449,6 +565,10 @@ try {
       await page.screenshot({ path: join(tmp, 'login.png'), fullPage: true });
       await page.getByLabel('Administrator key').fill(token);
       await page.getByRole('button', { name: 'Enter workspace' }).click();
+      await page
+        .getByRole('button', { name: 'Machines', exact: false })
+        .first()
+        .click();
       await page.getByRole('heading', { name: 'Start something' }).waitFor();
       await page.getByLabel('Your task').fill('echo browser-task');
       await page.getByRole('button', { name: 'Run task', exact: true }).click();
@@ -462,6 +582,59 @@ try {
       await page.evaluate(() =>
         window.scrollTo({ top: 0, behavior: 'instant' }),
       );
+      await page.getByRole('button', { name: 'Chat', exact: true }).click();
+      await page
+        .getByRole('button', { name: 'New chat', exact: false })
+        .click();
+      await page.getByLabel('Chat machine').selectOption(deviceId);
+      await page.getByLabel('Chat executor').selectOption('agent');
+      await page
+        .getByLabel('Message', { exact: true })
+        .fill('Browser conversation first turn');
+      await page.locator('#chat-send').click();
+      await page
+        .locator('.agent-message')
+        .filter({ hasText: 'fixture turn 1' })
+        .waitFor();
+      const chatURL = page.url();
+      await page
+        .getByLabel('Message', { exact: true })
+        .fill('Draft survives a refresh');
+      await page.reload();
+      await page
+        .locator('.agent-message')
+        .filter({ hasText: 'fixture turn 1' })
+        .waitFor();
+      assert.equal(
+        await page.getByLabel('Message', { exact: true }).inputValue(),
+        'Draft survives a refresh',
+      );
+      assert.equal(page.url(), chatURL);
+      await page
+        .getByLabel('Message', { exact: true })
+        .fill('Browser conversation second turn');
+      await page.locator('#chat-send').click();
+      await page
+        .locator('.agent-message')
+        .filter({ hasText: 'fixture turn 2' })
+        .waitFor();
+      await page.locator('#chat-file').setInputFiles({
+        name: 'browser-note.txt',
+        mimeType: 'text/plain',
+        buffer: Buffer.from('hello from the browser'),
+      });
+      await page
+        .getByLabel('Message', { exact: true })
+        .fill('permission please for attachment');
+      await page.locator('#chat-send').click();
+      await page
+        .getByRole('button', { name: 'Allow once', exact: true })
+        .click();
+      await page
+        .locator('.agent-message')
+        .filter({ hasText: 'fixture turn 3' })
+        .waitFor();
+      assert.equal(await page.locator('.chat-turn').count(), 3);
       await page.screenshot({ path: join(tmp, 'desktop.png'), fullPage: true });
       await page.setViewportSize({ width: 390, height: 844 });
       await page.screenshot({ path: join(tmp, 'mobile.png'), fullPage: true });

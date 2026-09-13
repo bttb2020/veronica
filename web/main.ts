@@ -1,4 +1,6 @@
 import './style.css';
+import { Conversations } from './chat';
+let chat: Conversations | undefined;
 type Device = {
   id: string;
   name: string;
@@ -36,7 +38,7 @@ let outputCursor = 0,
   detailLoading = false,
   socket: WebSocket | undefined,
   poll: ReturnType<typeof setInterval> | undefined,
-  view = 'machines';
+  view = 'chat';
 const $ = <T extends HTMLElement = HTMLElement>(selector: string) =>
   document.querySelector<T>(selector)!;
 const esc = (s: unknown) =>
@@ -77,6 +79,7 @@ async function api(
   method?: string,
 ): Promise<any> {
   const res = await fetch('/api' + path, {
+    signal: AbortSignal.timeout(30000),
     method: method ?? (body === undefined ? 'GET' : 'POST'),
     headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -103,6 +106,8 @@ function badge(status: string) {
 }
 function login() {
   loggedIn = false;
+  chat?.dispose();
+  chat = undefined;
   socket?.close();
   if (poll) clearInterval(poll);
   app.innerHTML = `<main class="login-page"><div class="login-story"><a class="brand" href="/">${mark}veronica<span class="word-dot">.</span></a><div class="login-copy"><span class="eyebrow">YOUR PERSONAL CONTROL ROOM</span><h1>Good work.<br>From anywhere.</h1><p>Bring your development machines together.<br>Pick a machine, send a task, stay in the flow.</p><div class="orbit-art"><div class="orbit-center">${mark}</div><span class="orbit-node n1">${icon('machine')}</span><span class="orbit-node n2">${icon('machine')}</span><span class="orbit-node n3">${icon('machine')}</span></div></div><span class="story-footer">YOUR MACHINES. YOUR INFRASTRUCTURE.</span></div><div class="login-form-wrap"><form id="login-form"><span class="eyebrow">WELCOME HOME</span><h2>Open your workspace</h2><p>Sign in with the administrator key you set when deploying Veronica.</p><label for="key">Administrator key</label><input id="key" type="password" autocomplete="current-password" placeholder="Enter your private key" required minlength="32"/><p id="login-error" class="form-error" role="alert"></p><button class="primary" type="submit">Enter workspace ${icon('arrow')}</button><div class="privacy-note">${icon('link')} A private connection to your own server.</div></form><div class="login-bottom">VERONICA <span>PERSONAL EDITION · 0.1</span></div></div></main>`;
@@ -122,7 +127,11 @@ function login() {
 }
 async function dashboard() {
   loggedIn = true;
-  app.innerHTML = `<div class="workspace"><aside class="sidebar"><a class="brand" href="/">${mark}veronica<span class="word-dot">.</span></a><div class="workspace-tag"><span class="avatar">P</span><div>Personal workspace<small>Just you. All your machines.</small></div></div><span class="nav-caption">WORKSPACE</span><nav><button class="nav-item active" data-view="machines">${icon('grid')}Machines<span id="nav-count">0</span></button><button class="nav-item" data-view="activity">${icon('history')}Activity</button><button class="nav-item" data-view="operators">${icon('link')}Operators</button></nav><div class="sidebar-note"><span class="mini-star">✳</span><strong>A little closer to your work.</strong><p>Your machines stay yours.<br>Veronica keeps you connected.</p></div><div class="sidebar-bottom"><span id="connection"><i></i> Connecting</span><button id="logout" class="icon-button" aria-label="Sign out" title="Sign out">${icon('logout')}</button></div></aside><main class="main"><header class="topbar"><span><span class="muted">Workspace</span><b>/</b><span id="breadcrumb">Machines</span></span><span class="personal-pill">${icon('link')} Personal server</span></header><section class="page-head"><div><span class="eyebrow">MAKE YOURSELF AT HOME</span><h1 id="page-title">Your machines.<span>Within reach.</span></h1><p id="page-subtitle">A single place to move your work forward, wherever it lives.</p></div><button id="add-device" class="primary">${icon('plus')} Connect a machine</button></section><section id="machines-view"><div class="section-title"><h2>Connected machines <span id="device-count">00</span></h2><span id="online-count" class="muted"></span></div><div id="devices" class="device-grid"></div><div class="work-grid"><section class="panel composer"><div class="panel-heading"><div class="section-icon">${icon('arrow')}</div><div><h2>Start something</h2><p>Choose where your next task runs.</p></div></div><form id="task-form"><div class="field-row"><div><label for="device-select">Machine</label><select id="device-select" required></select></div><div><label for="executor">Run with</label><select id="executor"><option value="shell">Shell command</option><option value="agent">Coding agent</option></select></div></div><label for="cwd">Working directory <span>relative to machine root</span></label><input id="cwd" value="." spellcheck="false"/><label for="task-input">Your task</label><textarea id="task-input" rows="4" placeholder="What would you like to work on?" maxlength="32000" required></textarea><div class="composer-bottom"><button id="new-session" class="text-button" type="button">New conversation</button><button id="run-task" class="primary" type="submit">Run task ${icon('arrow')}</button></div><p id="queue-note" class="small-note"></p></form></section><section class="panel recent-panel"><div class="section-title"><h2>Recent activity</h2><span class="live-label"><i></i>LIVE</span></div><div id="recent-tasks"></div></section></div></section><section id="activity-view" hidden><div class="panel activity-panel"><div class="section-title"><h2>Task history</h2><span class="muted">Latest 100 tasks</span></div><div id="all-tasks"></div></div></section><section id="operators-view" hidden><div class="panel operator-intro"><div class="section-icon">${icon('link')}</div><div><h2>More ways to stay in touch.</h2><p>Connect an ACP client, including wechat-acp, to one of your machines. Each operator gets its own revocable key.</p><button id="create-operator" class="primary">${icon('plus')} Create an operator</button></div></div><div id="operator-list"></div><p class="small-note">Text prompts are supported. Agent permissions are approved here in your dashboard.</p></section><section id="task-detail" class="terminal-panel" hidden><div class="terminal-top"><div><span class="terminal-dots"><i></i><i></i><i></i></span><span id="terminal-title">Task output</span></div><div id="terminal-actions"></div></div><div class="terminal-meta"><code id="terminal-command"></code><span id="terminal-status"></span></div><div id="permission-list"></div><pre id="terminal-output" tabindex="0" aria-label="Task output"></pre><div class="terminal-footer"><span id="terminal-info"></span><button id="copy-output" class="text-button">${icon('copy')} Copy output</button></div></section><footer class="page-footer"><span>BUILT FOR THE WAY YOU WORK.</span><span>Veronica <b>↗</b> <a href="https://github.com/bttb2020/veronica" target="_blank" rel="noreferrer">Source & documentation</a></span></footer></main></div>`;
+  socket?.close();
+  if (poll) clearInterval(poll);
+  app.innerHTML = `<div class="workspace"><aside class="sidebar"><a class="brand" href="/">${mark}veronica<span class="word-dot">.</span></a><div class="workspace-tag"><span class="avatar">P</span><div>Personal workspace<small>Just you. All your machines.</small></div></div><span class="nav-caption">WORKSPACE</span><nav><button class="nav-item" data-view="chat">${icon('arrow')}Chat</button><button class="nav-item active" data-view="machines">${icon('grid')}Machines<span id="nav-count">0</span></button><button class="nav-item" data-view="activity">${icon('history')}Activity</button><button class="nav-item" data-view="operators">${icon('link')}Operators</button></nav><div class="sidebar-note"><span class="mini-star">✳</span><strong>A little closer to your work.</strong><p>Your machines stay yours.<br>Veronica keeps you connected.</p></div><div class="sidebar-bottom"><span id="connection"><i></i> Connecting</span><button id="logout" class="icon-button" aria-label="Sign out" title="Sign out">${icon('logout')}</button></div></aside><main class="main"><header class="topbar"><span><span class="muted">Workspace</span><b>/</b><span id="breadcrumb">Machines</span></span><span class="personal-pill">${icon('link')} Personal server</span></header><section class="page-head"><div><span class="eyebrow">MAKE YOURSELF AT HOME</span><h1 id="page-title">Your machines.<span>Within reach.</span></h1><p id="page-subtitle">A single place to move your work forward, wherever it lives.</p></div><button id="add-device" class="primary">${icon('plus')} Connect a machine</button></section><section id="chat-view"></section><section id="machines-view"><div class="section-title"><h2>Connected machines <span id="device-count">00</span></h2><span id="online-count" class="muted"></span></div><div id="devices" class="device-grid"></div><div class="work-grid"><section class="panel composer"><div class="panel-heading"><div class="section-icon">${icon('arrow')}</div><div><h2>Start something</h2><p>Choose where your next task runs.</p></div></div><form id="task-form"><div class="field-row"><div><label for="device-select">Machine</label><select id="device-select" required></select></div><div><label for="executor">Run with</label><select id="executor"><option value="shell">Shell command</option><option value="agent">Coding agent</option></select></div></div><label for="cwd">Working directory <span>relative to machine root</span></label><input id="cwd" value="." spellcheck="false"/><label for="task-input">Your task</label><textarea id="task-input" rows="4" placeholder="What would you like to work on?" maxlength="32000" required></textarea><div class="composer-bottom"><button id="new-session" class="text-button" type="button">New conversation</button><button id="run-task" class="primary" type="submit">Run task ${icon('arrow')}</button></div><p id="queue-note" class="small-note"></p></form></section><section class="panel recent-panel"><div class="section-title"><h2>Recent activity</h2><span class="live-label"><i></i>LIVE</span></div><div id="recent-tasks"></div></section></div></section><section id="activity-view" hidden><div class="panel activity-panel"><div class="section-title"><h2>Task history</h2><span class="muted">Latest 100 tasks</span></div><div id="all-tasks"></div></div></section><section id="operators-view" hidden><div class="panel operator-intro"><div class="section-icon">${icon('link')}</div><div><h2>More ways to stay in touch.</h2><p>Connect an ACP client, including wechat-acp, to one of your machines. Each operator gets its own revocable key.</p><button id="create-operator" class="primary">${icon('plus')} Create an operator</button></div></div><div id="operator-list"></div><p class="small-note">Text prompts are supported. Agent permissions are approved here in your dashboard.</p></section><section id="task-detail" class="terminal-panel" hidden><div class="terminal-top"><div><span class="terminal-dots"><i></i><i></i><i></i></span><span id="terminal-title">Task output</span></div><div id="terminal-actions"></div></div><div class="terminal-meta"><code id="terminal-command"></code><span id="terminal-status"></span></div><div id="permission-list"></div><pre id="terminal-output" tabindex="0" aria-label="Task output"></pre><div class="terminal-footer"><span id="terminal-info"></span><button id="copy-output" class="text-button">${icon('copy')} Copy output</button></div></section><footer class="page-footer"><span>BUILT FOR THE WAY YOU WORK.</span><span>Veronica <b>↗</b> <a href="https://github.com/bttb2020/veronica" target="_blank" rel="noreferrer">Source & documentation</a></span></footer></main></div>`;
+  chat?.dispose();
+  chat = new Conversations($('#chat-view'), api, toast, pairDialog);
   $('#logout').onclick = async () => {
     await api('/logout', {});
     login();
@@ -222,6 +231,7 @@ async function refresh() {
       selectedDevice = devices[0]?.id ?? '';
     renderDevices();
     renderTasks();
+    if (view === 'chat') await chat?.refresh(devices);
     if (selectedTask) await refreshDetail();
   } catch (error) {
     if (loggedIn) toast((error as Error).message);
@@ -404,7 +414,11 @@ async function refreshDetail() {
 }
 function changeView(next: string) {
   view = next;
-  for (const name of ['machines', 'activity', 'operators'])
+  document
+    .querySelector('.workspace')
+    ?.classList.toggle('chat-mode', view === 'chat');
+  if (view === 'chat') void chat?.refresh(devices);
+  for (const name of ['chat', 'machines', 'activity', 'operators'])
     $(`#${name}-view`).hidden = name !== view;
   document
     .querySelectorAll<HTMLElement>('[data-view]')
@@ -441,7 +455,7 @@ function dialog(title: string, content: string): HTMLDialogElement {
 function pairDialog() {
   const d = dialog(
     'Connect a machine',
-    `<p class="dialog-description">Give your machine a name. Then run the pairing command on that machine.</p><form id="pair-form"><label for="machine-name">Machine name</label><input id="machine-name" placeholder="e.g. Studio Mac, Build server" maxlength="80" required/><button class="primary" type="submit">Create pairing code ${icon('arrow')}</button></form>`,
+    `<p class="dialog-description">Give your machine a name. Then run the pairing command on that machine.</p><form id="pair-form"><label for="machine-name">Machine name</label><input id="machine-name" placeholder="e.g. Studio Mac, Build server" maxlength="80" required/><label for="pair-agent">Coding agent</label><select id="pair-agent"><option value="codex">Codex</option><option value="claude">Claude</option><option value="shell">Shell only</option></select><button class="primary" type="submit">Create pairing code ${icon('arrow')}</button></form>`,
   );
   d.querySelector('form')!.onsubmit = async (e) => {
     e.preventDefault();
@@ -451,8 +465,10 @@ function pairDialog() {
       const pairing = await api('/pairings', {
         name: $<HTMLInputElement>('#machine-name').value,
       });
-      const command = `veronica-client pair --server ${location.origin} --code ${pairing.code} --root . --allow-shell`;
-      d.innerHTML = `<div class="dialog-heading"><h2>Make the connection.</h2><button class="icon-button close-dialog" aria-label="Close">${icon('close')}</button></div><p class="dialog-description">Run these commands on your development machine with Node.js 22 or newer. Choose your project directory first.</p><div class="install-step"><span>01</span><div><strong>Install the client</strong><pre>npm install -g https://github.com/bttb2020/veronica-client/releases/download/v0.1.1/bttb2020-veronica-client-0.1.1.tgz</pre></div></div><div class="install-step"><span>02</span><div><strong>Pair this directory</strong><pre id="pair-command"></pre></div></div><div class="install-step"><span>03</span><div><strong>Start the connection</strong><pre>veronica-client start</pre></div></div><p class="small-note">This one-time code expires in 10 minutes. The command enables shell execution. To use a coding agent, add <code>--agent-command '["your-agent", "--acp"]'</code>.</p><button id="copy-pair" class="primary">${icon('copy')} Copy pairing command</button>`;
+      const agent = $<HTMLSelectElement>('#pair-agent').value;
+      const agentFlag = agent === 'shell' ? '' : ` --agent ${agent}`;
+      const command = `veronica-client pair --server ${location.origin} --code ${pairing.code} --root . --allow-shell${agentFlag}`;
+      d.innerHTML = `<div class="dialog-heading"><h2>Make the connection.</h2><button class="icon-button close-dialog" aria-label="Close">${icon('close')}</button></div><p class="dialog-description">Run these commands on your development machine with Node.js 22 or newer. Choose your project directory first.</p><div class="install-step"><span>01</span><div><strong>Install the client</strong><pre>npm install -g https://github.com/bttb2020/veronica-client/releases/download/v0.2.0/bttb2020-veronica-client-0.2.0.tgz</pre></div></div><div class="install-step"><span>02</span><div><strong>Pair this directory</strong><pre id="pair-command"></pre></div></div><div class="install-step"><span>03</span><div><strong>Keep your machine connected</strong><pre>veronica-client service install</pre><p class="small-note">On Linux or macOS, this installs a service that starts at login. For a foreground session or other operating systems, run <code>veronica-client start</code>.</p></div></div><p class="small-note">This one-time code expires in 10 minutes. Complete the chosen agent’s local authentication on this machine first. The adapter uses your local credentials. Keep the machine awake and connected; closing this web page does not stop its work.</p><button id="copy-pair" class="primary">${icon('copy')} Copy pairing command</button>`;
       $('#pair-command').textContent = command;
       $('#copy-pair').onclick = () => {
         void navigator.clipboard

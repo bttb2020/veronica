@@ -50,3 +50,14 @@ export function validateTask(value: Record<string, unknown>) {
       : requireString(value.sessionId, 'sessionId', 100);
   return { deviceId, input, executor: value.executor, cwd, sessionId };
 }
+
+export function validateAttachments(value: unknown): string[] {
+  if (value === undefined) return [];
+  if (
+    !Array.isArray(value) ||
+    value.length > 4 ||
+    value.some((id) => typeof id !== 'string' || !/^[a-f0-9-]{36}$/.test(id))
+  )
+    throw new HttpError(400, 'Use at most four attachment IDs.');
+  return value;
+}
